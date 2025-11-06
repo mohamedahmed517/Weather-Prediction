@@ -28,7 +28,6 @@ The data is normalized using **MinMaxScaler** to enhance learning performance.
 ## 🗂️ Project Structure
 
 Weather Prediction/
-│
 ├── streamlit.py # Main Streamlit app
 ├── requirements.txt # Python dependencies
 └── README.md # Project documentation
