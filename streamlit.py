@@ -1,22 +1,26 @@
-import requests
-import numpy as np
-import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+import requests
+import pandas as pd
+import numpy as np
 from datetime import date, timedelta
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential #type: ignore
-from tensorflow.keras.layers import LSTM, Dense, Input #type: ignore
+from tensorflow.keras.models import Sequential # type: ignore
+from tensorflow.keras.layers import LSTM, Dense, Input # type: ignore
+
+# -----------------------------
+# إعداد الصفحة
+# -----------------------------
+st.set_page_config(page_title="Weather Predictor", layout="centered")
+st.title("🌤️ تطبيق التنبؤ بالطقس")
 
 WINDOW_SIZE = 7
 EPOCHS = 15
 BATCH_SIZE = 16
 
-DEFAULT_LAT = 30.0444
-DEFAULT_LON = 31.2357
-DEFAULT_TIMEZONE = None
-DEFAULT_CITY = "Default Cairo"
-
-
+# -----------------------------
+# اقتراح الملابس
+# -----------------------------
 def suggest_outfit(temp, rain):
     if rain is None:
         rain = 0.0
@@ -34,51 +38,34 @@ def suggest_outfit(temp, rain):
         return "دافي… تيشيرت خفيف"
     return "حر جدًا… شورت وتيشيرت خفيف"
 
-
-@st.cache_data(ttl=3600)
-def get_location_by_ip():
-    apis = [
-        {"url": "https://ipapi.co/json/", "name": "ipapi"},
-        {"url": "http://ip-api.com/json/", "name": "ip_api"},
-    ]
-
-    for api in apis:
-        try:
-            res = requests.get(api["url"], timeout=6)
-            res.raise_for_status()
-            data = res.json()
-
-            # ----- ipapi -----
-            if api["name"] == "ipapi":
-                lat = data.get("latitude")
-                lon = data.get("longitude")
-                timezone = data.get("timezone")
-                city = data.get("city")
-
-            # ----- ip-api -----
-            elif api["name"] == "ip_api":
-                lat = data.get("lat")
-                lon = data.get("lon")
-                timezone = data.get("timezone")
-                city = data.get("city")
-
-            if lat is not None and lon is not None:
-                return {
-                    "lat": float(lat),
-                    "lon": float(lon),
-                    "timezone": timezone,
-                    "city": city or "Unknown"
-                }
-
-        except:
-            continue
-
+# -----------------------------
+# جلب الموقع من IP باستخدام ip-api.com
+# -----------------------------
+def get_location_by_ip(client_ip):
+    if not client_ip:
+        return None
+    try:
+        res = requests.get(f"http://ip-api.com/json/{client_ip}", timeout=6)
+        res.raise_for_status()
+        data = res.json()
+        if data.get("status") != "success":
+            return None
+        lat = data.get("lat")
+        lon = data.get("lon")
+        city = data.get("city")
+        timezone = data.get("timezone")
+        if lat is not None and lon is not None:
+            return {"lat": lat, "lon": lon, "timezone": timezone, "city": city}
+    except:
+        return None
     return None
 
-@st.cache_data(ttl=3600 * 6)
+# -----------------------------
+# جلب بيانات الطقس من Open-Meteo
+# -----------------------------
+@st.cache_data(ttl=3600*6)
 def fetch_archive(lat, lon, start, end, timezone):
     daily_vars = "temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max"
-
     url = (
         "https://archive-api.open-meteo.com/v1/archive?"
         f"latitude={lat}&longitude={lon}"
@@ -86,7 +73,6 @@ def fetch_archive(lat, lon, start, end, timezone):
         f"&daily={daily_vars}"
         f"{'' if not timezone else f'&timezone={timezone}'}"
     )
-
     try:
         res = requests.get(url, timeout=15)
         res.raise_for_status()
@@ -94,26 +80,68 @@ def fetch_archive(lat, lon, start, end, timezone):
     except:
         return None
 
+# -----------------------------
+# جلب IP العميل تلقائي من المتصفح
+# -----------------------------
+if "client_ip" not in st.session_state:
+    st.session_state.client_ip = None
 
-st.set_page_config(page_title="Weather Predictor", layout="centered")
-st.title("🌤️ تطبيق التنبؤ بالطقس")
+# HTML + JS لجلب IP العميل
+components.html("""
+<script>
+fetch('https://api.ipify.org?format=json')
+.then(response => response.json())
+.then(data => {
+    const ip = data.ip;
+    window.parent.postMessage({type:'client_ip', ip: ip}, "*");
+});
+</script>
+""", height=0)
 
+# استلام الرسائل من المتصفح
+def on_message(message):
+    if message.data.get("type") == "client_ip":
+        st.session_state.client_ip = message.data.get("ip")
 
-loc = get_location_by_ip()
+# تسجيل callback
+components.html("""
+<script>
+window.addEventListener('message', function(event) {
+    const data = event.data;
+    if(data.type === 'client_ip'){
+        const ipElem = document.getElementById('client_ip_holder');
+        if(ipElem){
+            ipElem.innerText = data.ip;
+        }
+    }
+});
+</script>
+<div id="client_ip_holder" style="display:none"></div>
+""", height=0)
 
-if isinstance(loc, dict) and loc.get("lat") is not None and loc.get("lon") is not None:
-    lat = loc["lat"]
-    lon = loc["lon"]
-    timezone = loc.get("timezone") or DEFAULT_TIMEZONE
-    city = loc.get("city") or DEFAULT_CITY
-else:
-    lat = DEFAULT_LAT
-    lon = DEFAULT_LON
-    timezone = DEFAULT_TIMEZONE
-    city = DEFAULT_CITY
+# -----------------------------
+# استخدم IP لجلب الموقع
+# -----------------------------
+if st.session_state.client_ip is None:
+    st.info("⏳ جاري جلب IP العميل الخارجي...")
+    st.stop()
 
-st.write(f"📍 **الموقع الحالي:** {city}")
+client_ip = st.session_state.client_ip
+loc = get_location_by_ip(client_ip)
 
+if not loc:
+    st.error("📌 تعذر جلب الموقع من IP العميل باستخدام ip-api.com")
+    st.stop()
+
+lat = loc["lat"]
+lon = loc["lon"]
+timezone = loc.get("timezone")
+city = loc.get("city")
+st.write(f"📍 **الموقع الحالي حسب IP:** {city}")
+
+# -----------------------------
+# التنبؤ بالطقس
+# -----------------------------
 days_ahead = st.number_input("عدد الأيام للتنبؤ:", min_value=1, max_value=30, value=1)
 start_btn = st.button("ابدأ التنبؤ")
 
